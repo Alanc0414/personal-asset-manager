@@ -181,40 +181,28 @@ elif page == "AI 智能分析":
     基于当前持仓，使用 **Grok** 进行智能分析与洞见生成（仅供参考，非投资建议）。
     """)
 
-    # --- API Key 输入 ---
-    st.subheader("🔑 xAI API Key")
-    api_key = st.text_input(
-        "请输入您的 xAI API Key",
-        type="password",
-        placeholder="sk-...",
-        help="从 https://x.ai 获取 API Key",
-        key="xai_api_key_input"
-    )
-
-    # 保存到 session_state 以便后续使用
-    if api_key:
-        st.session_state["xai_api_key"] = api_key
-
     # --- 生成分析按钮 ---
     st.markdown("### 📊 生成分析报告")
     generate_btn = st.button("🚀 生成 AI 组合分析报告", type="primary", use_container_width=True)
 
     if generate_btn:
-        # 检查是否有 API Key
-        if "xai_api_key" not in st.session_state or not st.session_state["xai_api_key"]:
-            st.error("❌ 请先输入 xAI API Key！")
-        else:
-            # 准备用户最新真实持仓数据（与 Portfolio 页面一致）
-            portfolio_summary = """
-            当前持仓（用户最新真实数据）：
-            - 港股组合 (HK-PORT): 1份 @ ¥46,000，市值 ¥46,000，盈亏 +2.5%
-            - 以太坊 (ETH-USD): 18.51个 @ ¥17,500，市值 ¥324,000，盈亏 +5.2%
-            - 泰达币 (USDT-USD): 30,000个 @ ¥7.20，市值 ¥216,000，盈亏 0.0%
-            总资产: ¥586,000，今日盈亏: +¥4,850.00
-            """
+        # 从 st.secrets 读取 API Key
+        try:
+            xai_api_key = st.secrets["XAI_API_KEY"]
+            if not xai_api_key or xai_api_key == "在这里填你的xAI API Key":
+                st.error("❌ 未检测到有效的 xAI API Key，请在 .streamlit/secrets.toml 中配置！")
+            else:
+                # 准备用户最新真实持仓数据（与 Portfolio 页面一致）
+                portfolio_summary = """
+                当前持仓（用户最新真实数据）：
+                - 港股组合 (HK-PORT): 1份 @ ¥46,000，市值 ¥46,000，盈亏 +2.5%
+                - 以太坊 (ETH-USD): 18.51个 @ ¥17,500，市值 ¥324,000，盈亏 +5.2%
+                - 泰达币 (USDT-USD): 30,000个 @ ¥7.20，市值 ¥216,000，盈亏 0.0%
+                总资产: ¥586,000，今日盈亏: +¥4,850.00
+                """
 
-            # 构建 System Prompt（定义 AI 角色和输出格式）
-            system_prompt = """你是一位专业的投资组合分析师，擅长风险评估和市场洞察。
+                # 构建 System Prompt（定义 AI 角色和输出格式）
+                system_prompt = """你是一位专业的投资组合分析师，擅长风险评估和市场洞察。
 请严格按照以下结构输出分析报告，使用 Markdown 格式（支持 # ## - ** 等）：
 
 ## 1. 组合整体健康度评估
@@ -232,39 +220,43 @@ elif page == "AI 智能分析":
 最后必须加上：
 > **免责声明**：以上分析由 AI 生成，仅供参考，不构成投资建议。投资有风险，决策需谨慎。"""
 
-            # User Prompt（提供具体数据）
-            user_prompt = f"""请基于以下持仓数据进行专业分析：
+                # User Prompt（提供具体数据）
+                user_prompt = f"""请基于以下持仓数据进行专业分析：
 
 {portfolio_summary}
 
 请严格按照 System Prompt 中指定的结构输出报告。"""
 
-            # 调用 Grok API
-            try:
-                client = OpenAI(
-                    api_key=st.session_state["xai_api_key"],
-                    base_url="https://api.x.ai/v1"
-                )
-
-                with st.spinner("🧠 Grok 正在分析您的组合，请稍候..."):
-                    response = client.chat.completions.create(
-                        model="grok-3",  # 或 grok-3-latest，根据 xAI 文档
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        temperature=0.7,
-                        max_tokens=1500
+                # 调用 Grok API
+                try:
+                    client = OpenAI(
+                        api_key=xai_api_key,
+                        base_url="https://api.x.ai/v1"
                     )
 
-                # 获取返回内容
-                analysis_result = response.choices[0].message.content
+                    with st.spinner("🧠 Grok 正在分析您的组合，请稍候..."):
+                        response = client.chat.completions.create(
+                            model="grok-3",  # 或 grok-3-latest，根据 xAI 文档
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt}
+                            ],
+                            temperature=0.7,
+                            max_tokens=1500
+                        )
 
-                # 用 st.markdown 美化显示
-                st.success("✅ 分析完成！")
-                st.markdown("---")
-                st.markdown(analysis_result)
+                    # 获取返回内容
+                    analysis_result = response.choices[0].message.content
 
-            except Exception as e:
-                st.error(f"❌ 调用 Grok API 时出错：{str(e)}")
-                st.info("请检查 API Key 是否正确、网络是否正常，或稍后重试。")
+                    # 用 st.markdown 美化显示
+                    st.success("✅ 分析完成！")
+                    st.markdown("---")
+                    st.markdown(analysis_result)
+
+                except Exception as e:
+                    st.error(f"❌ 调用 Grok API 时出错：{str(e)}")
+                    st.info("请检查 API Key 是否正确、网络是否正常，或稍后重试。")
+
+        except (KeyError, FileNotFoundError):
+            st.error("❌ 无法读取 st.secrets 中的 XAI_API_KEY，请确保 .streamlit/secrets.toml 文件存在且配置正确！")
+            st.info("提示：在项目根目录创建 .streamlit/secrets.toml 文件，并填入你的 xAI API Key。")
