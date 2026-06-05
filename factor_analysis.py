@@ -152,6 +152,43 @@ def analyze_watchlist() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+def analyze_selected_assets(records: list[dict]) -> pd.DataFrame:
+    """对选中的资产逐一进行多因子评分。"""
+    rows = []
+    for item in records:
+        symbol = item.get("资产代码") or item.get("代码")
+        name = item.get("资产名称") or item.get("名称")
+        market = item.get("类型") or item.get("市场")
+        rows.append(analyze_symbol(symbol, name, market))
+    df = pd.DataFrame(rows)
+    if "综合评分" in df.columns:
+        df = df.sort_values("综合评分", ascending=False, na_position="last")
+    return df.reset_index(drop=True)
+
+
+def build_selected_assets_summary(df: pd.DataFrame) -> str:
+    """生成选中资产的多因子数据摘要，供 Grok 深度分析。"""
+    if df is None or df.empty:
+        return "未选中任何资产或评分数据为空。"
+
+    lines = [f"用户选中了 {len(df)} 支资产，以下是量化多因子评分结果："]
+    for _, row in df.iterrows():
+        lines.append(
+            f"\n### {row['名称']} ({row['代码']}) [{row['市场']}]\n"
+            f"- 综合评分: {row.get('综合评分', 'N/A')}/100\n"
+            f"- 趋势判断: {row.get('趋势判断', 'N/A')}\n"
+            f"- 现价: {row.get('现价', 'N/A')}\n"
+            f"- 动量20日: {row.get('动量20日(%)', 'N/A')}%, 动量60日: {row.get('动量60日(%)', 'N/A')}%\n"
+            f"- RSI: {row.get('RSI', 'N/A')}\n"
+            f"- 趋势结构: {row.get('趋势结构', 'N/A')}\n"
+            f"- 建议关注/买入区间: {row.get('建议买入区间', 'N/A')}\n"
+            f"- 预期目标价: {row.get('预期目标价', 'N/A')}\n"
+            f"- 止损参考: {row.get('止损参考', 'N/A')}\n"
+            f"- 备注: {row.get('备注', '')}"
+        )
+    return "\n".join(lines)
+
+
 def build_watchlist_summary(df: pd.DataFrame, top_n: int = 15) -> str:
     """生成供 Grok 使用的 Watchlist 摘要。"""
     if df is None or df.empty:

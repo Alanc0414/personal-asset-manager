@@ -3,6 +3,9 @@ from datetime import datetime, date
 import pandas as pd
 from openai import OpenAI
 
+from factor_analysis import analyze_selected_assets, build_selected_assets_summary
+from watchlist import get_watchlist_df
+
 st.set_page_config(
     page_title="个人资产管理平台",
     page_icon="📈",
@@ -246,7 +249,7 @@ st.sidebar.title("📊 导航菜单")
 
 page = st.sidebar.radio(
     label="请选择功能页面",
-    options=["首页", "我的持仓", "交易记录", "AI 智能分析"],
+    options=["首页", "我的持仓", "核心资产观察", "交易记录", "AI 智能分析"],
     index=0,
 )
 
@@ -429,6 +432,181 @@ elif page == "我的持仓":
             st.rerun()
 
     st.caption("📌 数据保存在当前浏览器会话中，刷新页面后会恢复为默认数据。")
+
+elif page == "核心资产观察":
+    st.title("核心资产观察")
+    st.markdown("---")
+
+    st.markdown(
+        "这是我们筛选的 **50 支长期关注核心资产**（20 美股 + 20 港股 + 10 加密货币）。"
+        "你可以多选资产，结合 **多因子量化评分** 与 **Grok 趋势分析**，判断值得关注的机会。"
+    )
+    st.caption(
+        "在下方多选资产后点击「分析选中资产」，将先展示量化评分，再由 Grok 生成趋势判断与关注建议。"
+    )
+
+    watchlist_df = get_watchlist_df()
+    MAX_ANALYZE_COUNT = 10
+
+    f1, f2, f3 = st.columns([2, 1, 1])
+    with f1:
+        search_text = st.text_input(
+            "搜索",
+            placeholder="输入代码或名称，例如：AAPL、腾讯、ETH",
+            key="watchlist_search",
+        )
+    with f2:
+        type_filter = st.selectbox(
+            "类型筛选",
+            ["全部", "美股", "港股", "加密货币"],
+            key="watchlist_type_filter",
+        )
+    with f3:
+        market_filter = st.selectbox(
+            "市场筛选",
+            ["全部", "US", "HK", "Crypto"],
+            key="watchlist_market_filter",
+        )
+
+    filtered_df = watchlist_df.copy()
+
+    if type_filter != "全部":
+        filtered_df = filtered_df[filtered_df["类型"] == type_filter]
+
+    if market_filter != "全部":
+        filtered_df = filtered_df[filtered_df["市场"] == market_filter]
+
+    if search_text.strip():
+        keyword = search_text.strip().lower()
+        mask = (
+            filtered_df["资产代码"].str.lower().str.contains(keyword, na=False)
+            | filtered_df["资产名称"].str.lower().str.contains(keyword, na=False)
+            | filtered_df["备注"].str.lower().str.contains(keyword, na=False)
+        )
+        filtered_df = filtered_df[mask]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("列表总数", len(watchlist_df))
+    m2.metric("当前显示", len(filtered_df))
+    m3.metric("美股", len(watchlist_df[watchlist_df["类型"] == "美股"]))
+    m4.metric("港股 / 加密货币", f"{len(watchlist_df[watchlist_df['类型'] == '港股'])} / {len(watchlist_df[watchlist_df['类型'] == '加密货币'])}")
+
+    st.dataframe(
+        filtered_df.reset_index(drop=True),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "资产代码": st.column_config.TextColumn("资产代码"),
+            "资产名称": st.column_config.TextColumn("资产名称"),
+            "类型": st.column_config.TextColumn("类型"),
+            "市场": st.column_config.TextColumn("市场"),
+            "备注": st.column_config.TextColumn("备注"),
+        },
+    )
+
+    if filtered_df.empty:
+        st.info("没有匹配的资产，请调整搜索或筛选条件。")
+    else:
+        st.markdown("### 选择要分析的资产")
+        option_labels = [
+            f"{row['资产名称']} ({row['资产代码']})"
+            for _, row in filtered_df.iterrows()
+        ]
+        label_to_record = {
+            f"{row['资产名称']} ({row['资产代码']})": row.to_dict()
+            for _, row in filtered_df.iterrows()
+        }
+
+        sel1, sel2 = st.columns([3, 1])
+        with sel2:
+            if st.button("全选当前列表", use_container_width=True, key="watchlist_select_all"):
+                st.session_state["watchlist_selected_labels"] = option_labels[:MAX_ANALYZE_COUNT]
+                st.rerun()
+            if st.button("清空选择", use_container_width=True, key="watchlist_clear_all"):
+                st.session_state["watchlist_selected_labels"] = []
+                st.rerun()
+
+        with sel1:
+            if "watchlist_selected_labels" not in st.session_state:
+                st.session_state["watchlist_selected_labels"] = []
+
+            selected_labels = st.multiselect(
+                "多选资产（建议一次不超过 10 只，避免等待过久）",
+                options=option_labels,
+                key="watchlist_selected_labels",
+                placeholder="选择要分析的股票或加密货币",
+            )
+
+        st.markdown("---")
+        analyze_btn = st.button(
+            "分析选中资产",
+            type="primary",
+            use_container_width=True,
+            key="btn_analyze_watchlist",
+        )
+
+        if analyze_btn:
+            if not selected_labels:
+                st.warning("请至少选择 1 支资产再分析。")
+            elif len(selected_labels) > MAX_ANALYZE_COUNT:
+                st.warning(f"一次最多分析 {MAX_ANALYZE_COUNT} 支资产，请减少选择数量。")
+            else:
+                selected_records = [label_to_record[label] for label in selected_labels]
+
+                with st.spinner(f"正在计算 {len(selected_records)} 支资产的多因子评分（拉取行情数据）..."):
+                    score_df = analyze_selected_assets(selected_records)
+
+                st.subheader("多因子量化评分")
+                st.dataframe(
+                    score_df,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                try:
+                    xai_api_key = st.secrets["XAI_API_KEY"]
+                    if not xai_api_key or xai_api_key == "在这里填你的xAI API Key":
+                        st.error("未检测到有效的 XAI_API_KEY，请在 Streamlit Secrets 中配置。")
+                    else:
+                        factor_summary = build_selected_assets_summary(score_df)
+                        system_prompt = """你是一位专业的股票与加密货币多因子策略分析师。
+请基于用户提供的量化评分数据，对每只资产输出 Markdown 格式分析报告。
+
+对每只资产必须包含：
+## 资产名称（代码）
+- **综合评分解读**：（说明分数高低意味着什么）
+- **未来趋势判断**：强势 / 震荡偏多 / 震荡 / 偏弱（可结合量化结果微调）
+- **主要影响因素**：动量、均线结构、RSI、波动率等（2-4 条）
+- **建议关注区间**：结合买入区间、目标价、止损给出可操作观察区
+- **是否值得关注**：一句话结论（观望 / 可关注 / 谨慎）
+
+最后单独输出：
+## 组合层面总结
+- 哪些资产相对更强
+- 主要风险点
+
+必须附上免责声明：以上分析由 AI 生成，仅供参考，不构成投资建议。"""
+
+                        user_prompt = f"""请对以下选中资产进行多因子趋势分析，给出是否值得关注的专业判断：
+
+{factor_summary}
+
+请用中文输出，结构清晰，便于普通投资者阅读。"""
+
+                        with st.spinner("Grok 正在生成趋势分析与建议..."):
+                            ai_result = call_grok_analysis(
+                                xai_api_key, system_prompt, user_prompt
+                            )
+
+                        st.subheader("Grok 趋势分析与建议")
+                        st.markdown(ai_result)
+
+                except (KeyError, FileNotFoundError):
+                    st.error("无法读取 XAI_API_KEY，量化评分已生成，但 AI 分析需要配置 API Key。")
+                    st.info("请在 .streamlit/secrets.toml 或 Streamlit Cloud Secrets 中配置 XAI_API_KEY。")
+                except Exception as e:
+                    st.error(f"AI 分析失败：{e}")
+                    st.info("量化评分表已展示，可稍后重试 Grok 分析。")
 
 elif page == "交易记录":
     st.title("📝 交易记录")
