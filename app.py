@@ -9,21 +9,43 @@ st.set_page_config(
     layout="wide",
 )
 
-PORTFOLIO_DTYPES = {
-    "资产代码": "string",
-    "资产名称": "string",
-    "类型": "string",
-    "持有数量": "float64",
-    "当前价格": "float64",
-    "市值": "float64",
-    "盈亏比例 (%)": "float64",
-    "备注": "string",
-}
+PORTFOLIO_COLUMNS = [
+    "资产代码",
+    "资产名称",
+    "类型",
+    "持有数量",
+    "当前价格",
+    "市值",
+    "盈亏比例 (%)",
+    "备注",
+]
+
+
+def empty_portfolio_df() -> pd.DataFrame:
+    """返回带正确列名的空持仓表。"""
+    return pd.DataFrame(columns=PORTFOLIO_COLUMNS)
+
+
+def coerce_to_dataframe(value) -> pd.DataFrame | None:
+    """把任意输入安全转换为 DataFrame，失败时返回 None。"""
+    if value is None:
+        return None
+    if isinstance(value, pd.DataFrame):
+        return value.copy()
+    if isinstance(value, dict):
+        try:
+            return pd.DataFrame(value)
+        except (ValueError, TypeError):
+            return None
+    try:
+        return pd.DataFrame(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def get_default_portfolio_df() -> pd.DataFrame:
     """返回默认持仓数据。"""
-    return normalize_portfolio_df(pd.DataFrame([
+    raw = pd.DataFrame([
         {
             "资产代码": "HK-PORT",
             "资产名称": "港股组合",
@@ -54,33 +76,37 @@ def get_default_portfolio_df() -> pd.DataFrame:
             "盈亏比例 (%)": 0.0,
             "备注": "稳定币对冲",
         },
-    ]))
+    ])
+    return normalize_portfolio_df(raw, fallback_to_default=False)
 
 
-def normalize_portfolio_df(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_portfolio_df(df, fallback_to_default: bool = True) -> pd.DataFrame:
     """统一列类型、清理空行，并修正 USDT 显示名称。"""
-    if df is None or df.empty:
-        return get_default_portfolio_df()
+    coerced = coerce_to_dataframe(df)
+    if coerced is None:
+        return get_default_portfolio_df() if fallback_to_default else empty_portfolio_df()
 
-    result = df.copy()
-
-    for col, dtype in PORTFOLIO_DTYPES.items():
+    result = coerced.copy()
+    for col in PORTFOLIO_COLUMNS:
         if col not in result.columns:
-            if col == "盈亏比例 (%)":
-                result[col] = pd.NA
-            elif col == "备注":
-                result[col] = ""
-            else:
-                result[col] = 0.0 if dtype == "float64" else ""
-        result[col] = result[col].astype(dtype, errors="ignore")
+            result[col] = pd.NA
+
+    result = result[PORTFOLIO_COLUMNS].copy()
+    if result.empty:
+        return empty_portfolio_df()
 
     result["资产代码"] = result["资产代码"].fillna("").astype(str).str.strip()
     result["资产名称"] = result["资产名称"].fillna("").astype(str).str.strip()
+    result["类型"] = result["类型"].fillna("").astype(str).str.strip()
+    result["备注"] = result["备注"].fillna("").astype(str)
+
     result.loc[result["资产代码"] == "USDT-USD", "资产名称"] = "USDT"
     result.loc[result["资产名称"] == "泰达币 (USDT)", "资产名称"] = "USDT"
 
     # 去掉点 + 号误添加的空行（资产代码为空的行）
     result = result[result["资产代码"] != ""].reset_index(drop=True)
+    if result.empty:
+        return empty_portfolio_df()
 
     for col in ["持有数量", "当前价格", "市值", "盈亏比例 (%)"]:
         result[col] = pd.to_numeric(result[col], errors="coerce").fillna(0.0)
@@ -88,20 +114,67 @@ def normalize_portfolio_df(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def recalculate_market_value(df: pd.DataFrame) -> pd.DataFrame:
+def recalculate_market_value(df) -> pd.DataFrame:
     """市值 = 持有数量 × 当前价格。"""
-    result = normalize_portfolio_df(df)
-    if not result.empty:
-        result["市值"] = result["持有数量"] * result["当前价格"]
+    result = normalize_portfolio_df(df, fallback_to_default=False)
+    if result.empty:
+        return result
+    result["市值"] = result["持有数量"] * result["当前价格"]
     return result
 
 
-def sync_portfolio_from_editor() -> None:
-    """data_editor 修改后回调：重算市值并写回 portfolio_df。"""
-    edited = st.session_state.get("portfolio_editor")
-    if edited is None:
-        return
-    st.session_state.portfolio_df = recalculate_market_value(edited)
+def prepare_editor_df(df: pd.DataFrame) -> pd.DataFrame:
+    """为 data_editor 准备数值类型，便于双击/单击编辑。"""
+    prepared = recalculate_market_value(df)
+    if prepared.empty:
+        return prepared
+    for col in ["持有数量", "当前价格", "市值", "盈亏比例 (%)"]:
+        prepared[col] = prepared[col].astype(float)
+    return prepared
+
+
+def clear_portfolio_editor_state() -> None:
+    """清除编辑器缓存，避免添加/删除后表格状态不同步。"""
+    if "portfolio_editor" in st.session_state:
+        del st.session_state["portfolio_editor"]
+
+
+def resolve_holding_input(symbol: str, name: str, asset_type: str) -> tuple[str, str] | None:
+    """根据用户输入解析资产代码和名称；代码可留空，只填名称也行。"""
+    symbol = symbol.strip()
+    name = name.strip()
+
+    if not symbol and not name:
+        return None
+
+    alias_map = {
+        "eth": ("ETH-USD", "以太坊"),
+        "以太坊": ("ETH-USD", "以太坊"),
+        "btc": ("BTC-USD", "比特币"),
+        "比特币": ("BTC-USD", "比特币"),
+        "usdt": ("USDT-USD", "USDT"),
+        "泰达币": ("USDT-USD", "USDT"),
+        "bnb": ("BNB-USD", "BNB"),
+        "sol": ("SOL-USD", "Solana"),
+        "xrp": ("XRP-USD", "瑞波币"),
+        "doge": ("DOGE-USD", "狗狗币"),
+    }
+
+    lookup = (symbol or name).lower().replace(" ", "")
+    if lookup in alias_map:
+        return alias_map[lookup]
+
+    if asset_type in ("加密货币", "稳定币"):
+        base = (symbol or name).upper().replace(" ", "")
+        if "USDT" in base:
+            return "USDT-USD", "USDT"
+        code = base if base.endswith("-USD") else f"{base}-USD"
+        display = name or base.replace("-USD", "")
+        return code, display
+
+    code = symbol or name.upper()
+    display = name or symbol
+    return code, display
 
 
 def build_portfolio_summary(df: pd.DataFrame) -> str:
@@ -150,14 +223,23 @@ def get_analysis_portfolio_df() -> pd.DataFrame:
     return recalculate_market_value(st.session_state.portfolio_df)
 
 
+def safe_init_portfolio_df() -> pd.DataFrame:
+    """安全初始化 portfolio_df，避免 None 或非 DataFrame 导致崩溃。"""
+    try:
+        current = st.session_state.get("portfolio_df")
+        normalized = recalculate_market_value(current)
+        if normalized.empty:
+            return get_default_portfolio_df()
+        return normalized
+    except Exception:
+        return get_default_portfolio_df()
+
+
 # ========== 初始化 session_state ==========
 if "transactions" not in st.session_state:
     st.session_state.transactions = []
 
-if "portfolio_df" not in st.session_state:
-    st.session_state.portfolio_df = get_default_portfolio_df()
-else:
-    st.session_state.portfolio_df = recalculate_market_value(st.session_state.portfolio_df)
+st.session_state.portfolio_df = safe_init_portfolio_df()
 
 # ========== 侧边栏导航 ==========
 st.sidebar.title("📊 导航菜单")
@@ -203,34 +285,35 @@ elif page == "我的持仓":
         "市值会自动更新。修改后点击下方按钮保存。"
     )
     st.caption(
-        "💡 请只修改【持有数量】【当前价格】两列；"
-        "新增持仓请用下方表单，不要用表格工具栏的 + 号。"
+        "💡 单击或双击【持有数量】【当前价格】单元格即可编辑；"
+        "删除行可用表格左侧勾选后点删除，或用下方「删除持仓」。"
+        "新增请用下方表单。"
     )
 
-    st.data_editor(
-        st.session_state.portfolio_df,
+    editor_input = prepare_editor_df(st.session_state.portfolio_df)
+
+    edited_df = st.data_editor(
+        editor_input,
         key="portfolio_editor",
         num_rows="dynamic",
         use_container_width=True,
         hide_index=True,
-        on_change=sync_portfolio_from_editor,
         column_config={
             "持有数量": st.column_config.NumberColumn(
                 "持有数量",
-                help="可直接修改",
+                help="单击单元格即可编辑",
                 min_value=0.0,
-                step=0.01,
-                format="%.4f",
+                step=0.0001,
             ),
             "当前价格": st.column_config.NumberColumn(
                 "当前价格",
-                help="可直接修改",
+                help="单击单元格即可编辑",
                 min_value=0.0,
-                step=0.01,
-                format="%.4f",
+                step=0.0001,
             ),
             "市值": st.column_config.NumberColumn(
                 "市值",
+                help="自动计算 = 持有数量 × 当前价格",
                 disabled=True,
                 format="%.2f",
             ),
@@ -246,56 +329,102 @@ elif page == "我的持仓":
         },
     )
 
+    # 同步编辑结果并重算市值（每次交互后 Streamlit 会自动 rerun）
+    st.session_state.portfolio_df = recalculate_market_value(edited_df)
+    current_df = st.session_state.portfolio_df
+
+    if not current_df.empty:
+        total_value = float(current_df["市值"].sum())
+        holding_count = len(current_df)
+        m1, m2 = st.columns(2)
+        m1.metric("持仓数量", f"{holding_count} 个")
+        m2.metric("总市值（实时）", f"¥{total_value:,.2f}")
+
     st.markdown("### ➕ 添加新持仓")
     with st.form(key="add_holding_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
-            new_symbol = st.text_input("资产代码", placeholder="例如：0700.HK")
-            new_name = st.text_input("资产名称", placeholder="例如：腾讯控股")
+            new_symbol = st.text_input(
+                "资产代码（可留空）",
+                placeholder="不知道可留空，例如：ETH-USD / 0700.HK",
+            )
+            new_name = st.text_input(
+                "资产名称",
+                placeholder="例如：eth、以太坊、USDT",
+            )
             new_type = st.selectbox("类型", ["股票", "加密货币", "稳定币"])
         with col2:
             new_qty = st.number_input("持有数量", min_value=0.0, step=0.01, format="%.2f")
             new_price = st.number_input("当前价格", min_value=0.0, step=0.01, format="%.2f")
 
-        if st.form_submit_button("添加持仓"):
-            if new_symbol.strip() and new_name.strip() and new_qty > 0:
+        st.caption("💡 不知道代码也没关系：填名称即可，如输入 eth 会自动识别为 ETH-USD。")
+
+        if st.form_submit_button("添加持仓", use_container_width=True):
+            resolved = resolve_holding_input(new_symbol, new_name, new_type)
+            if resolved and new_qty > 0:
+                asset_code, asset_name = resolved
                 new_row = pd.DataFrame([{
-                    "资产代码": new_symbol.strip(),
-                    "资产名称": new_name.strip(),
+                    "资产代码": asset_code,
+                    "资产名称": asset_name,
                     "类型": new_type,
                     "持有数量": float(new_qty),
                     "当前价格": float(new_price),
                     "市值": float(new_qty) * float(new_price),
-                    "盈亏比例 (%)": pd.NA,
+                    "盈亏比例 (%)": 0.0,
                     "备注": "",
                 }])
-                st.session_state.portfolio_df = pd.concat(
-                    [st.session_state.portfolio_df, new_row],
-                    ignore_index=True,
-                )
                 st.session_state.portfolio_df = recalculate_market_value(
-                    st.session_state.portfolio_df
+                    pd.concat([current_df, new_row], ignore_index=True)
                 )
-                st.success("✅ 新持仓已添加！")
+                clear_portfolio_editor_state()
+                st.success(f"✅ 已添加 {asset_name}（{asset_code}）！")
                 st.rerun()
             else:
-                st.warning("请填写资产代码、资产名称，且持有数量需大于 0。")
+                st.warning("请至少填写【资产名称】或【资产代码】，且持有数量需大于 0。")
+
+    st.markdown("### 🗑️ 删除持仓")
+    if current_df.empty:
+        st.info("当前没有可删除的持仓。")
+    else:
+        delete_options = [
+            f"{row['资产名称']} ({row['资产代码']})"
+            for _, row in current_df.iterrows()
+        ]
+        label_to_code = {
+            f"{row['资产名称']} ({row['资产代码']})": row["资产代码"]
+            for _, row in current_df.iterrows()
+        }
+        to_delete_labels = st.multiselect(
+            "选择要删除的持仓",
+            options=delete_options,
+            placeholder="选择一项或多项",
+        )
+        if st.button("删除选中持仓", use_container_width=True):
+            if not to_delete_labels:
+                st.warning("请先选择要删除的持仓。")
+            else:
+                codes = [label_to_code[label] for label in to_delete_labels]
+                st.session_state.portfolio_df = current_df[
+                    ~current_df["资产代码"].isin(codes)
+                ].reset_index(drop=True)
+                clear_portfolio_editor_state()
+                st.success(f"✅ 已删除 {len(codes)} 条持仓。")
+                st.rerun()
 
     st.markdown("---")
     btn_col1, btn_col2 = st.columns(2)
 
     with btn_col1:
         if st.button("保存持仓数据", type="primary", use_container_width=True):
-            current = recalculate_market_value(st.session_state.portfolio_df)
-            st.session_state["my_portfolio"] = current.copy()
-            st.session_state.portfolio_df = current
+            saved = recalculate_market_value(st.session_state.portfolio_df)
+            st.session_state["my_portfolio"] = saved.copy()
+            st.session_state.portfolio_df = saved
             st.success("✅ 持仓数据已保存，AI 智能分析页面将使用这份数据。")
 
     with btn_col2:
         if st.button("重置为默认数据", use_container_width=True):
             st.session_state.portfolio_df = get_default_portfolio_df()
-            if "portfolio_editor" in st.session_state:
-                del st.session_state["portfolio_editor"]
+            clear_portfolio_editor_state()
             st.success("✅ 已恢复为默认持仓数据。")
             st.rerun()
 
