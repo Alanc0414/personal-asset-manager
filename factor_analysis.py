@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 
+from market_data import fetch_histories_batch, fetch_symbol_history
 from watchlist import WATCHLIST_50
 
 
@@ -25,9 +25,8 @@ def _clip_score(value: float, low: float = 0.0, high: float = 100.0) -> float:
     return float(max(low, min(high, value)))
 
 
-def analyze_symbol(symbol: str, name: str, market: str) -> dict:
-    """拉取行情并计算多因子评分与价位参考。"""
-    result = {
+def _empty_symbol_result(symbol: str, name: str, market: str, note: str = "") -> dict:
+    return {
         "代码": symbol,
         "名称": name,
         "市场": market,
@@ -41,22 +40,27 @@ def analyze_symbol(symbol: str, name: str, market: str) -> dict:
         "建议买入区间": None,
         "预期目标价": None,
         "止损参考": None,
-        "备注": "",
+        "备注": note,
     }
 
-    try:
-        hist = yf.Ticker(symbol).history(period="1y", auto_adjust=True)
-    except Exception as exc:
-        result["备注"] = f"拉取失败: {exc}"
-        return result
+
+def analyze_symbol_from_history(
+    symbol: str,
+    name: str,
+    market: str,
+    hist: pd.DataFrame | None,
+    fetch_note: str = "",
+) -> dict:
+    """基于已拉取的历史行情计算多因子评分，不发起网络请求。"""
+    result = _empty_symbol_result(symbol, name, market)
 
     if hist is None or hist.empty or "Close" not in hist.columns:
-        result["备注"] = "无历史行情"
+        result["备注"] = fetch_note or "无历史行情（可能停牌或数据源暂不可用）"
         return result
 
     close = hist["Close"].dropna()
     if len(close) < 30:
-        result["备注"] = "历史数据过短"
+        result["备注"] = fetch_note or "历史数据过短"
         return result
 
     price = float(close.iloc[-1])
@@ -69,7 +73,6 @@ def analyze_symbol(symbol: str, name: str, market: str) -> dict:
     rsi = _calc_rsi(close)
     vol20 = float(close.pct_change().rolling(20).std().iloc[-1] * 100)
 
-    # 多因子打分（0-100）
     momentum_score = _clip_score(50 + ret20 * 1.2 + ret60 * 0.5)
     trend_score = 50.0
     if price > ma20:
@@ -141,11 +144,40 @@ def analyze_symbol(symbol: str, name: str, market: str) -> dict:
     return result
 
 
+def analyze_symbol(symbol: str, name: str, market: str) -> dict:
+    """拉取行情并计算多因子评分与价位参考。"""
+    hist, fetch_note = fetch_symbol_history(symbol)
+    return analyze_symbol_from_history(symbol, name, market, hist, fetch_note)
+
+
+def _analyze_records_with_batch(records: list[dict]) -> list[dict]:
+    symbols = []
+    meta_by_symbol: dict[str, tuple[str, str]] = {}
+    for item in records:
+        symbol = item.get("资产代码") or item.get("代码")
+        name = item.get("资产名称") or item.get("名称")
+        market = item.get("类型") or item.get("市场")
+        if not symbol:
+            continue
+        symbols.append(symbol)
+        meta_by_symbol[symbol] = (name, market)
+
+    histories = fetch_histories_batch(symbols)
+    rows = []
+    for symbol in symbols:
+        name, market = meta_by_symbol[symbol]
+        hist, fetch_note = histories.get(symbol, (None, "未请求"))
+        rows.append(analyze_symbol_from_history(symbol, name, market, hist, fetch_note))
+    return rows
+
+
 def analyze_watchlist() -> pd.DataFrame:
     """分析 50 个核心资产并返回评分表。"""
-    rows = []
-    for item in WATCHLIST_50:
-        rows.append(analyze_symbol(item["代码"], item["名称"], item["市场"]))
+    records = [
+        {"资产代码": item["代码"], "资产名称": item["名称"], "类型": item["市场"]}
+        for item in WATCHLIST_50
+    ]
+    rows = _analyze_records_with_batch(records)
     df = pd.DataFrame(rows)
     if "综合评分" in df.columns:
         df = df.sort_values("综合评分", ascending=False, na_position="last")
@@ -153,13 +185,8 @@ def analyze_watchlist() -> pd.DataFrame:
 
 
 def analyze_selected_assets(records: list[dict]) -> pd.DataFrame:
-    """对选中的资产逐一进行多因子评分。"""
-    rows = []
-    for item in records:
-        symbol = item.get("资产代码") or item.get("代码")
-        name = item.get("资产名称") or item.get("名称")
-        market = item.get("类型") or item.get("市场")
-        rows.append(analyze_symbol(symbol, name, market))
+    """对选中的资产进行多因子评分（批量预取行情）。"""
+    rows = _analyze_records_with_batch(records)
     df = pd.DataFrame(rows)
     if "综合评分" in df.columns:
         df = df.sort_values("综合评分", ascending=False, na_position="last")

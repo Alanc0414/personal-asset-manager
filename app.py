@@ -219,6 +219,55 @@ def call_grok_analysis(api_key: str, system_prompt: str, user_prompt: str) -> st
     return response.choices[0].message.content
 
 
+def build_analysis_cache_key(records: list[dict]) -> tuple[tuple[str, str, str], ...]:
+    """将选中资产转为可缓存的 hashable key。"""
+    key_items = []
+    for item in records:
+        symbol = item.get("资产代码") or item.get("代码") or ""
+        name = item.get("资产名称") or item.get("名称") or ""
+        market = item.get("类型") or item.get("市场") or ""
+        key_items.append((symbol, name, market))
+    return tuple(key_items)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def cached_analyze_selected(records_key: tuple[tuple[str, str, str], ...]) -> pd.DataFrame:
+    """缓存 30 分钟内的多因子评分结果，减少重复行情请求。"""
+    records = [
+        {"资产代码": code, "资产名称": name, "类型": market}
+        for code, name, market in records_key
+    ]
+    return analyze_selected_assets(records)
+
+
+def show_watchlist_analysis_summary(score_df: pd.DataFrame) -> int:
+    """展示行情拉取成功/失败汇总，返回成功数量。"""
+    total = len(score_df)
+    if total == 0:
+        st.error("未生成任何评分结果，请稍后重试。")
+        return 0
+
+    success_mask = score_df["综合评分"].notna()
+    success_count = int(success_mask.sum())
+    failed_df = score_df[~success_mask]
+
+    if success_count == total:
+        st.success(f"行情拉取成功：{success_count} / {total} 只")
+    elif success_count > 0:
+        st.success(f"行情拉取成功：{success_count} / {total} 只")
+        st.warning(f"有 {len(failed_df)} 只资产未能获取完整行情，其余结果仍可参考。")
+        with st.expander("查看失败详情"):
+            for _, row in failed_df.iterrows():
+                st.markdown(f"- **{row['名称']} ({row['代码']})**：{row.get('备注', '未知错误')}")
+    else:
+        st.error(f"行情拉取失败：0 / {total} 只。请等待 1-2 分钟后重试，或先在本地验证网络。")
+        with st.expander("查看失败详情"):
+            for _, row in failed_df.iterrows():
+                st.markdown(f"- **{row['名称']} ({row['代码']})**：{row.get('备注', '未知错误')}")
+
+    return success_count
+
+
 def get_analysis_portfolio_df() -> pd.DataFrame:
     """获取 AI 分析使用的持仓数据。"""
     if "my_portfolio" in st.session_state:
@@ -552,9 +601,14 @@ elif page == "核心资产观察":
                 st.warning(f"一次最多分析 {MAX_ANALYZE_COUNT} 支资产，请减少选择数量。")
             else:
                 selected_records = [label_to_record[label] for label in selected_labels]
+                cache_key = build_analysis_cache_key(selected_records)
 
-                with st.spinner(f"正在计算 {len(selected_records)} 支资产的多因子评分（拉取行情数据）..."):
-                    score_df = analyze_selected_assets(selected_records)
+                with st.spinner(
+                    f"正在计算 {len(selected_records)} 支资产的多因子评分（拉取行情数据，含自动重试）..."
+                ):
+                    score_df = cached_analyze_selected(cache_key)
+
+                success_count = show_watchlist_analysis_summary(score_df)
 
                 st.subheader("多因子量化评分")
                 st.dataframe(
@@ -565,7 +619,9 @@ elif page == "核心资产观察":
 
                 try:
                     xai_api_key = st.secrets["XAI_API_KEY"]
-                    if not xai_api_key or xai_api_key == "在这里填你的xAI API Key":
+                    if success_count == 0:
+                        st.info("量化评分暂无有效数据，已跳过 Grok 分析。请稍后重试行情拉取。")
+                    elif not xai_api_key or xai_api_key == "在这里填你的xAI API Key":
                         st.error("未检测到有效的 XAI_API_KEY，请在 Streamlit Secrets 中配置。")
                     else:
                         factor_summary = build_selected_assets_summary(score_df)

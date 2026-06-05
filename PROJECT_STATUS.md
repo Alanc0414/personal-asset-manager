@@ -1,255 +1,403 @@
-# Personal Asset Manager — 项目状态快照
+# Personal Asset Manager — 项目状态文档（上下文锚点）
 
-> 最后更新：2026-06-05  
-> 用途：开新对话时复制全文，让 Agent 快速了解项目现状。
+> **最后更新**：2026-06-05  
+> **最新提交**：`d173147`（本地待 push A0 改动）  
+> **用途**：开新对话时复制全文（或附录模板），让 Agent 快速了解项目，减少重复沟通与 token 浪费。
 
 ---
 
-## 1. 项目当前整体状态
+## 1. 项目概述（Project Overview）
+
+**一句话定位**：基于 Streamlit 的**自用**个人资产管理平台，支持持仓编辑、50 支核心资产观察、多因子量化评分与 Grok AI 趋势分析。
 
 | 字段 | 内容 |
 |------|------|
 | 项目名称 | Personal Asset Manager（个人资产管理平台） |
-| 项目路径 | `C:\Users\newne\personal-asset-manager` |
-| 技术栈 | Python 3.x + Streamlit + pandas + yfinance + OpenAI SDK（Grok API） |
-| GitHub 仓库 | https://github.com/Alanc0414/personal-asset-manager |
+| 本地路径 | `C:\Users\newne\personal-asset-manager` |
+| GitHub | https://github.com/Alanc0414/personal-asset-manager |
 | 线上地址 | https://personal-asset-manager-646ufqdwxdletfqpvtmum7.streamlit.app/ |
-| 主入口文件 | `app.py` |
-| 当前分支 | `main` |
-| 最新提交 | `c63dd84` — chore: redeploy after xAI API key update |
-| 部署方式 | GitHub `main` push → Streamlit Cloud 自动部署 |
-| 运行状态 | 已上线；导航与核心功能可用；Grok API 已验证可用 |
-| 用户定位 | 自用财经资产管理工具；链接可分享，但 AI 调用消耗所有者的 xAI API 额度 |
+| 主入口 | `app.py` |
+| 分支 | `main` |
+| 部署 | GitHub push → Streamlit Cloud 自动部署 |
+| 运行状态 | 已上线；Grok API 已验证可用 |
+| 用户类型 | 编程小白；只提目标，由 Cursor 执行开发 |
+| 分享说明 | 链接可外发；持仓数据按浏览器会话隔离；**AI 调用消耗所有者 xAI API 额度** |
+
+### 开发阶段总览
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| 阶段一 | 修复崩溃 + 持仓可编辑表格 | 已完成 |
+| 阶段二 | 50 支核心资产列表展示 | 已完成 |
+| 阶段三 | 多因子评分 + Grok 趋势分析 | **进行中** |
+| 阶段四 | 持仓 vs 核心资产联动分析 | 待做 |
+| 阶段五 | 持久化、CSV、界面美化、访问控制 | 待做 |
 
 ### 架构概览
 
 ```mermaid
 flowchart TB
-    subgraph pages [Streamlit Pages]
+    subgraph pages [StreamlitPages]
         home[首页]
         portfolio[我的持仓]
         watchlistPage[核心资产观察]
         trades[交易记录]
-        ai[AI智能分析]
+        aiPage[AI智能分析]
     end
 
-    subgraph data [Data Layer]
+    subgraph dataLayer [DataLayer]
         sessionState[st.session_state]
         watchlistPy[watchlist.py]
         factorPy[factor_analysis.py]
     end
 
     subgraph external [External]
-        yfinance[yfinance行情]
-        grok[Grok API via XAI_API_KEY]
+        yfinanceApi[yfinance行情]
+        grokApi[GrokAPI_XAI_API_KEY]
     end
 
     portfolio --> sessionState
     watchlistPage --> watchlistPy
     watchlistPage --> factorPy
-    factorPy --> yfinance
-    watchlistPage --> grok
-    ai --> grok
-    portfolio --> ai
+    factorPy --> yfinanceApi
+    watchlistPage --> grokApi
+    aiPage --> grokApi
+    portfolio --> aiPage
 ```
 
-### 文件结构
+---
+
+## 2. 当前功能状态（Current Features Status）
+
+### 功能总表
+
+| 模块 | 状态 | 阶段 | 关键实现 | 备注 |
+|------|------|------|----------|------|
+| 首页 | 已完成 | — | 项目简介、导航引导 | — |
+| 我的持仓 — 可编辑表格 | 已完成 | 一/二 | `st.data_editor` + `portfolio_df` | 仅数量/价格可编辑 |
+| 我的持仓 — 自动算市值 | 已完成 | 一/二 | `recalculate_market_value()` | 数量 × 价格 |
+| 我的持仓 — 添加/删除 | 已完成 | 一/二 | `st.form` + 多选删除 | 代码可留空，eth 自动识别 |
+| 我的持仓 — 保存 | 已完成 | 一/二 | → `my_portfolio` | 供 AI 页读取 |
+| 核心资产观察 — 列表 | 已完成 | 二/三 | `get_watchlist_df()` 50 只 | 20 美股 + 20 港股 + 10 币 |
+| 核心资产观察 — 搜索筛选 | 已完成 | 二/三 | 关键词 + 类型/市场 | — |
+| 核心资产观察 — 多选分析 | 已完成 | 三 | `multiselect`，最多 10 只 | 全选/清空按钮 |
+| 核心资产观察 — 量化评分 | 部分完成 | 三 | `market_data.py` + `factor_analysis.py` | A0 已加固：重试/批量/缓存；**待线上验证** |
+| 核心资产观察 — Grok 分析 | 已完成 | 三 | `call_grok_analysis` grok-3 | 需有效 XAI_API_KEY |
+| AI 智能分析 — 持仓组合分析 | 已完成 | 一/三 | 读 `my_portfolio` 优先 | — |
+| AI 智能分析 — 未来趋势预测 | 已完成 | 三 | Tab + 可选时间范围 | 基于持仓 |
+| 交易记录 | 已完成 | — | 会话内 list | **无持久化** |
+| 数据持久化 | 未开始 | 五 | — | 刷新恢复默认 |
+| CSV 导入导出 | 未开始 | 五 | — | — |
+| K 线可视化 | 未开始 | 三 | plotly 已依赖未接入 | — |
+| 登录/访问控制 | 未开始 | 五 | — | 分享链接无密码 |
+
+### 各模块要点（详见上表）
+
+**我的持仓**
+- `st.session_state["portfolio_df"]`；widget key=`portfolio_editor`
+- USDT 统一显示「USDT」；防崩溃用 `coerce_to_dataframe`，禁用 `on_change`
+- 实时展示：持仓数量、总市值
+
+**核心资产观察**
+- 流程：多选 → 量化评分表 → Grok Markdown 分析报告（含免责声明）
+
+**AI 智能分析**
+- 两个 Tab：持仓组合分析 / 未来趋势预测
+
+---
+
+## 3. 技术栈（Tech Stack）
+
+| 类别 | 技术 | 版本/说明 | 用途 |
+|------|------|-----------|------|
+| 语言 | Python | 3.x | 运行时 |
+| UI 框架 | Streamlit | >=1.35（线上 v1.58） | 全站 UI |
+| 数据处理 | pandas | >=2.2 | DataFrame、session_state |
+| 行情数据 | yfinance | >=0.2.40 | 多因子 K 线（1 年历史） |
+| AI 调用 | openai SDK | >=1.30 | 兼容 Grok API |
+| AI 模型 | grok-3 | xAI | 持仓/趋势/Watchlist 分析 |
+| 可视化 | plotly | >=5.22 | 依赖已装，K 线待开发 |
+| 工具库 | tenacity, requests, python-dotenv, loguru, schedule | 见 requirements.txt | 行情重试与 HTTP 会话 |
+| 部署 | Streamlit Cloud | Community | 绑定 GitHub `main` |
+| 密钥管理 | st.secrets / Secrets TOML | — | `XAI_API_KEY` |
+
+---
+
+## 4. 核心文件说明（Key Files）
 
 ```
 personal-asset-manager/
-├── app.py                 # 主应用（所有页面 UI + Grok 调用）
-├── watchlist.py           # 50 支核心资产列表 DataFrame
-├── factor_analysis.py     # 多因子评分（yfinance + 量化指标）
-├── verify_portfolio.py    # 本地离线验证脚本（持仓逻辑）
-├── requirements.txt       # Python 依赖
+├── app.py                 # 主应用（~760 行）
+├── watchlist.py           # 50 资产列表（~75 行）
+├── market_data.py         # 行情拉取（重试/超时/批量）
+├── factor_analysis.py     # 多因子评分（~207 行）
+├── verify_portfolio.py    # 离线验证脚本（~113 行）
+├── requirements.txt       # 依赖
+├── PROJECT_STATUS.md      # 本文件
 ├── .streamlit/
-│   └── secrets.toml       # 本地密钥（gitignore，勿提交）
-├── .env.example           # 环境变量示例
-└── PROJECT_STATUS.md      # 本文件
+│   └── secrets.toml       # 本地密钥（gitignore）
+└── .env.example           # 环境变量示例
 ```
 
----
+| 文件 | 职责 | 关键符号/入口 |
+|------|------|----------------|
+| [`app.py`](app.py) | 5 个页面 UI、持仓逻辑、Grok 调用 | `recalculate_market_value`, `resolve_holding_input`, `call_grok_analysis`, `safe_init_portfolio_df` |
+| [`watchlist.py`](watchlist.py) | 50 支资产 DataFrame | `get_watchlist_df()`, `WATCHLIST_50`, `WATCHLIST_COLUMNS` |
+| [`market_data.py`](market_data.py) | 健壮行情拉取 | `fetch_symbol_history`, `fetch_histories_batch`, `classify_fetch_error` |
+| [`factor_analysis.py`](factor_analysis.py) | 量化评分与 Grok 摘要 | `analyze_symbol_from_history`, `analyze_selected_assets`, `build_selected_assets_summary` |
+| [`verify_portfolio.py`](verify_portfolio.py) | 本地逻辑自检 | `py verify_portfolio.py` |
+| `.streamlit/secrets.toml` | 本地 API Key | `XAI_API_KEY = "xai-..."` |
+| `PROJECT_STATUS.md` | 项目上下文锚点 | 本文件 |
 
-## 2. 已完成功能列表
-
-### 首页
-
-- 项目简介与导航引导
-
-### 我的持仓（阶段一、二已完成）
-
-| 功能 | 说明 |
-|------|------|
-| 可编辑持仓表 | `st.data_editor`，key=`portfolio_editor` |
-| 可编辑列 | 仅「持有数量」「当前价格」 |
-| 自动算市值 | 市值 = 持有数量 × 当前价格 |
-| 状态存储 | `st.session_state["portfolio_df"]` |
-| 添加持仓 | `st.form` 表单；资产代码可留空（如 `eth` → ETH-USD） |
-| 删除持仓 | 多选删除 + 表格勾选删行 |
-| 保存 | 「保存持仓数据」→ `st.session_state["my_portfolio"]` |
-| USDT 显示 | 统一为「USDT」，非「泰达币 (USDT)」 |
-| 防崩溃 | `coerce_to_dataframe`；已移除 `on_change` 回调（曾致 AttributeError） |
-| 实时指标 | 持仓数量、总市值（实时） |
-
-### 核心资产观察（阶段三 3.1 + 部分 3.2/3.3）
-
-| 功能 | 说明 |
-|------|------|
-| 50 支资产列表 | 20 美股 + 20 港股 + 10 加密货币（`watchlist.py`） |
-| 搜索筛选 | 按代码/名称/备注搜索；类型、市场筛选 |
-| 多选分析 | `multiselect` 多选，最多 10 只/次 |
-| 量化评分 | 动量、均线结构、RSI、波动率 → 综合评分 0–100 |
-| Grok 分析 | 趋势判断、影响因素、关注区间、是否值得关注 |
-| 辅助按钮 | 全选当前列表、清空选择 |
-
-### AI 智能分析
-
-| 功能 | 说明 |
-|------|------|
-| 持仓组合分析 | 读取 `my_portfolio`（优先）或 `portfolio_df` |
-| 未来趋势预测 | 独立 Tab，可选 1–2 周 / 1 / 3 / 6 个月 |
-| API | Grok via `XAI_API_KEY`，模型 `grok-3` |
-
-### 交易记录
-
-- 会话内添加/展示买卖记录（刷新后清空，无持久化）
-
-### 工程与部署
-
-- GitHub + Streamlit Cloud CI/CD（push `main` 自动部署）
-- Streamlit Cloud Secrets 配置 `XAI_API_KEY`
-- 本地验证脚本 `verify_portfolio.py`
-
----
-
-## 3. 正在进行中的功能
-
-| 模块 | 状态 | 说明 |
-|------|------|------|
-| 多因子量化评分 | 部分完成 | 本地 yfinance 正常；**线上 Streamlit Cloud 拉行情不稳定**，评分表可能 None /「数据不足」 |
-| Grok 趋势分析 | 已完成 | API Key 配置正确后可用 |
-| 阶段三增强 | 未开始 | 50 只一键评分排行、更明确「值不值得买」、K 线可视化 |
-| 阶段四联动 | 未开始 | 持仓 vs 核心资产 Watchlist 对比分析 |
-| 阶段五体验 | 未开始 | 持久化、CSV、界面美化、访问控制 |
-
----
-
-## 4. 待办事项（按优先级）
-
-### P0 — 最优先
-
-- [ ] 修复线上 yfinance 行情拉取（加重试、超时、错误提示；评估备用数据源）
-
-### P1 — 高优先级
-
-- [ ] **阶段四**：持仓与核心资产 Watchlist 联动对比（我的持仓里有的 vs 50 只核心资产）
-- [ ] **阶段三增强**：50 只一键评分排行榜；买入/观望结论更清晰
-
-### P2 — 中优先级
-
-- [ ] 持仓数据持久化（JSON / CSV / 轻量 DB），刷新页面不丢失
-- [ ] CSV 导入导出持仓
-- [ ] AI 分析与真实持仓深度联动优化
-
-### P3 — 低优先级
-
-- [ ] 界面美化、移动端适配
-- [ ] 修复 `use_container_width` 弃用警告（改用 `width` 参数）
-- [ ] 可选：简单密码登录，防止外人消耗 API 额度
-- [ ] 补充 GitHub README
-
----
-
-## 5. 重要技术决策记录
-
-### 应用架构
-
-- **主文件** `app.py` 承载全部 Streamlit 页面；辅助逻辑拆至 `watchlist.py`、`factor_analysis.py`
-- **导航页面**：首页、我的持仓、核心资产观察、交易记录、AI 智能分析
-
-### 状态管理（st.session_state）
+### session_state 关键 Key
 
 | Key | 类型 | 用途 |
 |-----|------|------|
-| `portfolio_df` | DataFrame | 持仓编辑态，实时同步自 data_editor |
-| `my_portfolio` | DataFrame | 用户点「保存持仓数据」后，供 AI 分析读取 |
-| `portfolio_editor` | widget state | data_editor 组件 key |
-| `watchlist_selected_labels` | list | 核心资产观察页多选状态 |
+| `portfolio_df` | DataFrame | 持仓编辑态 |
+| `my_portfolio` | DataFrame | 保存后供 AI 读取 |
+| `portfolio_editor` | widget | data_editor 组件状态 |
+| `watchlist_selected_labels` | list | 核心资产多选 |
 | `transactions` | list | 交易记录（会话内） |
 
-### st.data_editor 决策
+---
 
-- 参数：`key="portfolio_editor"`、`num_rows="dynamic"`、`use_container_width=True`、`hide_index=True`
-- 仅「持有数量」「当前价格」可编辑；其余列 `disabled=True`
-- **同步方式**：使用 `edited_df` 返回值 + `recalculate_market_value()`，**不用** `on_change`（曾在 Streamlit Cloud 引发 AttributeError）
-- 新增持仓用下方 `st.form`，不建议用表格 `+` 号（会产生空行）
+## 5. 最近变更记录（Recent Changes）
 
-### Secrets 与 API
+| 提交 | 日期（约） | 用户可感知的变化 |
+|------|------------|------------------|
+| （待 push） | 2026-06-05 | **A0**：行情拉取加固（重试/批量/缓存）；核心资产观察显示成功/失败汇总 |
+| `d173147` | 2026-06-05 | 新增 PROJECT_STATUS.md 项目状态文档 |
+| `c63dd84` | 2026-06-05 | API Key 更新后触发线上重新部署 |
+| `ed35083` | 2026-06-05 | Secrets 更新后触发 redeploy |
+| `a9b3b37` | 2026-06-05 | 添加 Dev Container 配置 |
+| `7f626ba` | 2026-06-05 | **新增「核心资产观察」页**：50 只列表 + 多选 + 量化评分 + Grok 分析 |
+| `4d04894` | 2026-06-05 | 持仓可编辑重构；新增 watchlist/factor_analysis 预备文件 |
+| `3b1a052` | 2026-06-04 | 修复表格崩溃；USDT 改名；AI 页增加趋势预测 Tab |
+| `d1aeb29` | 2026-06-04 | 持仓真正可编辑 + 市值自动计算 + AI 联动 |
+| `3223c8b` | 更早 | 接入 st.secrets 读取 XAI_API_KEY |
+| `36d7b09` | 更早 | 项目初始化 |
 
-- 密钥名：`XAI_API_KEY`
-- 本地：`.streamlit/secrets.toml`（已在 `.gitignore`，**勿提交 git**）
-- 线上：Streamlit Cloud → Settings → Secrets（TOML 格式）
-- **重要**：改 API Key 只 Save Secrets 不够时，需 Reboot / Redeploy / push 触发部署；Secrets **不随 git push 更新**
-- Grok 调用：`openai.OpenAI(api_key=..., base_url="https://api.x.ai/v1")`，模型 `grok-3`
+---
 
-### 多因子评分（factor_analysis.py）
+## 6. 下一步计划 / Roadmap（Next Priorities）
 
-- 数据源：yfinance，1 年历史 K 线
-- 因子：20/60 日动量、MA20/50/200 趋势结构、RSI(14)、20 日波动率
-- 输出：综合评分、趋势判断、建议买入区间、预期目标价、止损参考
+```mermaid
+flowchart LR
+    phase12[阶段一二 已完成]
+    phase3[阶段三 进行中]
+    phase4[阶段四 待做]
+    phase5[阶段五 待做]
+    phase12 --> phase3 --> phase4 --> phase5
+```
 
-### 部署流程
+### 阶段三（进行中）— 多因子 + 趋势分析
 
-1. 本地改代码 → `git push origin main`
-2. Streamlit Cloud 日志出现 `Pulling code changes` → `Updated app!`
-3. 浏览器 Ctrl+F5 硬刷新
-4. 改 API：Streamlit Cloud Secrets Save → 等待 1 分钟或触发 redeploy
+- P0：修复 Streamlit Cloud 上 yfinance 行情拉取（重试、超时、友好报错）
+- P1：50 只一键评分排行榜
+- P1：分析结论更明确（值得关注 / 观望 / 谨慎）
+- P2：K 线图表（plotly）
 
-### Cursor 协作约定
+### 阶段四 — 联动分析
 
-- **用户**：只描述目标，不必写命令
-- **Cursor**：大头，直接改代码、push、部署
-- **Grok 聊天**：可选第二意见（表结构设计、分析话术），结论用自然语言带回 Cursor
-- **不要**：Grok 生成命令 → 用户复制给 Cursor 执行
+- P1：我的持仓 vs 50 只核心资产对比（重叠、缺失、评分对照）
+
+### 阶段五 — 体验优化
+
+- P2：持仓持久化（JSON/CSV/轻量 DB）
+- P2：CSV 导入导出持仓
+- P3：界面美化、`use_container_width` 弃用修复
+- P3：可选密码登录（防 API 被刷）
+- P3：GitHub README
+
+---
+
+## 7. 已知问题与待办事项（Known Issues & TODOs）
 
 ### 已知问题
 
-| 问题 | 影响 | 状态 |
-|------|------|------|
-| 线上 yfinance 拉行情失败 | 量化评分表 None | 待修 P0 |
-| `use_container_width` 弃用警告 | 日志黄字，不影响运行 | 待修 P3 |
-| 无数据持久化 | 刷新页面恢复默认持仓 | 待做 P2 |
-| 无登录 | 分享链接者可用 AI 消耗 API | 待做 P3 |
-| 交易记录不保存 | 刷新后清空 | 待做 P2 |
+| 问题 | 影响 | 优先级 | 临时应对 |
+|------|------|--------|----------|
+| 线上 yfinance 拉行情失败 | 量化评分表 None /「数据不足」 | P0 | A0 已加重试+批量+缓存；仍失败时看「失败详情」expander |
+| 无数据持久化 | 刷新页面恢复默认持仓 | P2 | 分析前点「保存持仓数据」 |
+| 交易记录不保存 | 刷新后清空 | P2 | — |
+| 无登录控制 | 分享链接者可用 AI | P3 | 勿公开传播链接 |
+| `use_container_width` 弃用警告 | 日志黄字 | P3 | 不影响运行 |
+| 表格 `+` 号添加空行 | 出现 None 行 | — | 用下方表单添加，不用 `+` |
+
+### TODO Checklist
+
+**P0**
+- [x] 修复线上 yfinance 行情拉取（A0：market_data.py + 重试/缓存，待线上验证）
+
+**P1**
+- [ ] 阶段四：持仓 vs Watchlist 联动对比
+- [ ] 50 只一键评分排行
+- [ ] 买入/观望结论更清晰
+
+**P2**
+- [ ] 持仓数据持久化
+- [ ] CSV 导入导出
+- [ ] AI 与真实持仓深度联动优化
+
+**P3**
+- [ ] 界面美化、移动端适配
+- [ ] `use_container_width` → `width` 迁移
+- [ ] 可选简单密码登录
+- [ ] GitHub README
 
 ---
 
-## 附录：新对话快速上下文模板
+## 8. 本地运行与部署说明（How to Run & Deploy）
 
-复制下面这段到新对话开头即可：
+### 本地运行
+
+```powershell
+cd C:\Users\newne\personal-asset-manager
+py -m pip install -r requirements.txt
+```
+
+创建 `.streamlit/secrets.toml`（勿提交 git）：
+
+```toml
+XAI_API_KEY = "xai-你的完整密钥"
+```
+
+启动：
+
+```powershell
+py -m streamlit run app.py
+```
+
+浏览器打开 `http://localhost:8501`。
+
+离线验证持仓逻辑：
+
+```powershell
+py verify_portfolio.py
+```
+
+### 线上部署（Streamlit Cloud）
+
+1. 代码 push 到 GitHub `main` 分支
+2. Streamlit Cloud 自动拉取，日志出现 `Updated app!`
+3. 浏览器 **Ctrl+F5** 硬刷新线上地址
+
+**配置 API Key（线上，与 git 无关）**
+
+1. 打开 https://share.streamlit.io → 登录
+2. 进入应用 `personal-asset-manager` → **Secrets**
+3. 写入 `XAI_API_KEY = "xai-..."` → **Save**
+4. 等待约 1 分钟，或 push 触发 redeploy / Manage app → Reboot
+
+**触发重新部署的方式**
+
+- `git push origin main`（推荐）
+- Streamlit Cloud → Reboot app
+- 空提交 push（`chore: trigger redeploy`）
+
+### 分享链接注意事项
+
+- 访客看到的是**自己的空会话**，看不到你的持仓（除非你未来做账号系统）
+- 访客使用 AI 功能会消耗**你的** xAI API 额度
+- 建议只发给信任的人，或后续加密码
+
+---
+
+## 9. 开发规范与注意事项（Development Notes）
+
+### 架构约定
+
+- 主逻辑在 `app.py`；数据/算法拆到 `watchlist.py`、`factor_analysis.py`
+- 导航页面固定 5 个：首页、我的持仓、核心资产观察、交易记录、AI 智能分析
+- 新页面：改 `st.sidebar.radio` 的 `options` 并新增 `elif page ==` 分支
+
+### st.data_editor 规范
+
+- key=`portfolio_editor`；`num_rows="dynamic"`；`hide_index=True`
+- **仅**「持有数量」「当前价格」可编辑
+- 用 `edited_df` 返回值同步，**禁止** `on_change`（曾导致 AttributeError）
+- 新增持仓用 `st.form`，不要用表格 `+` 号
+
+### 持仓添加别名（resolve_holding_input）
+
+| 用户输入 | 自动识别 |
+|----------|----------|
+| eth / 以太坊 | ETH-USD / 以太坊 |
+| usdt / 泰达币 | USDT-USD / USDT |
+| btc / 比特币 | BTC-USD / 比特币 |
+| 代码留空 + 填名称 | 按类型自动生成代码 |
+
+### Secrets 安全
+
+- `XAI_API_KEY` 仅存于 `.streamlit/secrets.toml`（本地）和 Streamlit Cloud Secrets（线上）
+- **绝不**提交到 git、**绝不**粘贴到聊天/截图
+- 改 Key 后：Secrets Save → 等 1 分钟或 redeploy
+
+### Grok API 调用
+
+```python
+client = OpenAI(api_key=..., base_url="https://api.x.ai/v1")
+model = "grok-3"
+```
+
+### Cursor 协作约定
+
+| 角色 | 职责 |
+|------|------|
+| 用户 | 只描述目标，不必写命令 |
+| Cursor | 大头：改代码、测试、push、触发部署 |
+| Grok 聊天 | 可选第二意见；结论用自然语言带回 Cursor |
+| 避免 | Grok 生成命令 → 用户复制给 Cursor |
+
+### 文档维护
+
+- 每次完成重要功能后，更新本文件 **§2 功能总表**、**§5 Recent Changes**、**§7 TODO**
+- 更新文首「最后更新」日期与「最新提交」hash
+
+---
+
+## 附录 A：新对话快速上下文模板
+
+复制以下块到新对话开头（约 20 行）：
 
 ```
-项目：personal-asset-manager（个人资产管理平台）
+【项目上下文 — personal-asset-manager】
+
 路径：C:\Users\newne\personal-asset-manager
 线上：https://personal-asset-manager-646ufqdwxdletfqpvtmum7.streamlit.app/
 仓库：https://github.com/Alanc0414/personal-asset-manager
-技术栈：Streamlit + pandas + yfinance + Grok API
+最新提交：d173147
+详细文档：PROJECT_STATUS.md（请先阅读）
 
-当前已完成：
-- 我的持仓可编辑表格 + 保存到 my_portfolio
-- 核心资产观察 50 只列表 + 多选分析 + Grok 趋势分析
-- AI 智能分析（持仓分析 + 趋势预测）
+技术栈：Streamlit + pandas + yfinance + Grok API (grok-3)
+页面：首页 | 我的持仓 | 核心资产观察 | 交易记录 | AI智能分析
 
-当前重点（待办）：
-- P0：修复线上 yfinance 行情拉取
-- P1：阶段四持仓 vs Watchlist 联动；阶段三 50 只一键评分
+已完成：
+- 持仓可编辑表（portfolio_df / my_portfolio）+ 保存
+- 50 只核心资产观察 + 多选分析 + Grok 趋势分析
+- AI 持仓分析 + 趋势预测 Tab
 
-重要约束：
-- XAI_API_KEY 在 Streamlit Cloud Secrets，不提交 git
-- 用户是编程小白，只提目标即可
-- 详细状态见 PROJECT_STATUS.md
+当前重点（P0/P1）：
+- A0 已做：yfinance 重试/批量/缓存（待线上验证）
+- 阶段四：持仓 vs Watchlist 联动
+- 50 只一键评分排行
+
+约束：
+- XAI_API_KEY 在 Streamlit Secrets，不提交 git
+- 用户是编程小白，只提目标
+- data_editor 不用 on_change；Secrets 不随 git push
+
+完整状态见 PROJECT_STATUS.md
 ```
 
 ---
 
-*本文档随项目进展手动更新。重大功能完成后请同步修订「待办」与「进行中」章节。*
+## 附录 B：文档维护说明
+
+- 本文件是项目**唯一权威上下文锚点**
+- 与 plan 文件、聊天记录无关；以本文件 + 代码为准
+- 重大变更后由 Cursor 或用户触发更新，并 optional push 到 GitHub
+
+---
+
+*Personal Asset Manager — PROJECT_STATUS.md*
