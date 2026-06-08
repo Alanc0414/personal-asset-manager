@@ -465,7 +465,7 @@ st.sidebar.caption("✅ 数据最后更新：今天")
 
 # ========== 主页面内容 ==========
 if page == "首页":
-    st.title("👋 欢迎来到个人资产管理平台")
+    st.title("👋 欢迎来到智能资产决策平台")
     st.markdown("---")
     st.markdown("""
     ## 📌 项目简介
