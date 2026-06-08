@@ -12,6 +12,78 @@ st.set_page_config(
     layout="wide",
 )
 
+# ========== 自动刷新状态初始化 ==========
+if "auto_refresh_enabled" not in st.session_state:
+    st.session_state.auto_refresh_enabled = False
+if "refresh_interval" not in st.session_state:
+    st.session_state.refresh_interval = 30  # 默认 30 秒
+if "last_refresh_time" not in st.session_state:
+    st.session_state.last_refresh_time = datetime.now()
+
+
+def render_auto_refresh_bar(page_key: str) -> None:
+    """在页面顶部渲染统一的自动刷新控制栏。
+
+    Args:
+        page_key: 页面标识（用于区分不同页面的刷新状态）
+    """
+    st.markdown("### 🔄 自动刷新控制")
+
+    col1, col2, col3, col4 = st.columns([1.2, 1.5, 2, 1.3])
+
+    with col1:
+        enabled = st.toggle(
+            "启用自动刷新",
+            value=st.session_state.auto_refresh_enabled,
+            key=f"toggle_refresh_{page_key}",
+        )
+        st.session_state.auto_refresh_enabled = enabled
+
+    with col2:
+        interval_options = [15, 30, 60, 120]
+        interval_labels = ["15秒", "30秒", "1分钟", "2分钟"]
+        current_interval = st.session_state.refresh_interval
+        try:
+            default_index = interval_options.index(current_interval)
+        except ValueError:
+            default_index = 1  # 默认 30秒
+
+        selected_interval = st.selectbox(
+            "刷新频率",
+            options=interval_options,
+            index=default_index,
+            format_func=lambda x: interval_labels[interval_options.index(x)],
+            key=f"select_interval_{page_key}",
+        )
+        st.session_state.refresh_interval = selected_interval
+
+    with col3:
+        last_time = st.session_state.last_refresh_time
+        delta = datetime.now() - last_time
+        if delta.total_seconds() < 10:
+            time_text = "刚刚"
+        elif delta.total_seconds() < 60:
+            time_text = f"{int(delta.total_seconds())}秒前"
+        else:
+            time_text = f"{int(delta.total_seconds() / 60)}分钟前"
+        st.caption(f"最后更新：{time_text}")
+
+    with col4:
+        if st.button("🔄 手动刷新", use_container_width=True, key=f"btn_manual_refresh_{page_key}"):
+            st.session_state.last_refresh_time = datetime.now()
+            st.rerun()
+
+    # 自动刷新逻辑
+    if st.session_state.auto_refresh_enabled:
+        now = datetime.now()
+        elapsed = (now - st.session_state.last_refresh_time).total_seconds()
+        if elapsed >= st.session_state.refresh_interval:
+            st.session_state.last_refresh_time = now
+            st.rerun()
+
+    st.divider()
+
+
 PORTFOLIO_COLUMNS = [
     "资产代码",
     "资产名称",
@@ -332,6 +404,9 @@ elif page == "我的持仓":
     st.title("📊 我的持仓")
     st.markdown("---")
 
+    # 自动刷新控制栏
+    render_auto_refresh_bar("portfolio")
+
     st.markdown(
         "你可以直接在表格中修改【持有数量】和【当前价格】，"
         "市值会自动更新。修改后点击下方按钮保存。"
@@ -485,6 +560,9 @@ elif page == "我的持仓":
 elif page == "核心资产观察":
     st.title("核心资产观察")
     st.markdown("---")
+
+    # 自动刷新控制栏
+    render_auto_refresh_bar("watchlist")
 
     st.markdown(
         "这是我们筛选的 **50 支长期关注核心资产**（20 美股 + 20 港股 + 10 加密货币）。"
