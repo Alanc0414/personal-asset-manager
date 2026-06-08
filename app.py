@@ -84,6 +84,90 @@ def render_auto_refresh_bar(page_key: str) -> None:
     st.divider()
 
 
+def generate_asset_analysis(symbol: str, price_data: dict) -> dict:
+    """调用 Grok 进行单资产智能分析，返回结构化结果。"""
+    import json
+    from openai import OpenAI
+
+    system_prompt = """你现在是 Grok 4.3，一个逻辑严谨、洞察力强的短期金融分析师。
+
+你的任务是对指定资产进行 **未来1-4周** 的深度分析。
+
+核心要求（必须严格执行）：
+
+1. 分析必须以**因果逻辑**为主线，清楚解释价格背后的主要驱动因素。不要只罗列现象，要讲清楚“因为发生了什么事件/情况，导致了什么结果”。
+
+2. 必须识别并说明**当前最核心的驱动因素**是什么，以及它为什么比其他因素更重要。
+
+3. 输出必须包含以下结构：
+   - 综合评分（0-100）+ 结论标签（值得关注 / 观望 / 谨慎）
+   - 过去1-2周价格主要变动的核心驱动因素分析（必须带因果解释）
+   - 未来1-4周最值得关注的**关键催化剂**（需说明可能的影响强度和时间窗口）
+   - 未来1-4周需要重点警惕的**主要风险**（需说明影响程度）
+   - 技术面当前状态简要总结（仅作为辅助）
+   - 综合判断 + 建议关注价格区间
+
+4. 语气要求：
+   - 像一位有经验的老师在分析，语言直接、有逻辑、有洞察力
+   - 避免空泛、中性、套话式的表述
+   - 优先使用事实和逻辑推理
+
+请严格按照以上要求输出高质量分析，并严格使用以下 JSON 格式返回（不要输出多余文字）：
+
+{
+  "score": 数字（0-100）,
+  "conclusion": "值得关注" 或 "观望" 或 "谨慎",
+  "technical_summary": "技术面简要结论",
+  "multi_factor_conclusion": "多因子与驱动因素分析结论",
+  "future_trend": "未来1-4周趋势判断",
+  "suggested_range": "建议关注价格区间",
+  "risk_warning": "风险提示"
+}"""
+
+    user_prompt = f"""请对以下资产进行智能分析：
+
+资产代码：{symbol}
+当前价格：{price_data.get('price')}
+涨跌幅：{price_data.get('change_pct')}%
+
+请给出专业、客观的分析结论。"""
+
+    try:
+        xai_api_key = st.secrets["XAI_API_KEY"]
+        client = OpenAI(api_key=xai_api_key, base_url="https://api.x.ai/v1")
+
+        response = client.chat.completions.create(
+            model="grok-3",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.6,
+            max_tokens=1200,
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        # 尝试解析 JSON
+        if content.startswith("```"):
+            content = content.split("```")[1].replace("json", "").strip()
+
+        analysis = json.loads(content)
+        return analysis
+
+    except Exception as e:
+        # 降级返回默认结构
+        return {
+            "score": 50,
+            "conclusion": "观望",
+            "technical_summary": "暂无法获取技术面数据",
+            "multi_factor_conclusion": "暂无法获取多因子结论",
+            "future_trend": "暂无法判断未来趋势",
+            "suggested_range": "暂无建议区间",
+            "risk_warning": f"分析失败：{e}"
+        }
+
+
 PORTFOLIO_COLUMNS = [
     "资产代码",
     "资产名称",
@@ -563,6 +647,275 @@ elif page == "核心资产观察":
 
     # 自动刷新控制栏
     render_auto_refresh_bar("watchlist")
+
+    # ========== 第一阶段：资产快速查询入口 ==========
+    st.markdown("### 🔍 资产快速查询与智能分析")
+    st.caption("输入资产代码（如 AAPL、9988.HK、ETH），快速查看最新价格并进入智能分析")
+
+    search_col, btn_col = st.columns([3, 1])
+    with search_col:
+        query_symbol = st.text_input(
+            "资产代码",
+            placeholder="例如：AAPL、9988.HK、ETH",
+            label_visibility="collapsed",
+            key="quick_search_input",
+        )
+    with btn_col:
+        search_clicked = st.button("查询", type="primary", use_container_width=True, key="btn_quick_search")
+
+    # 查询结果展示（持久化到 session_state）
+    if search_clicked and query_symbol.strip():
+        from market_data import fetch_latest_price
+
+        with st.spinner(f"正在查询 {query_symbol.upper()} 的最新行情..."):
+            result = fetch_latest_price(query_symbol.strip())
+
+        if result.get("error"):
+            st.session_state["quick_search_result"] = None
+            st.error(f"❌ 查询失败：{result['error']}")
+        else:
+            st.session_state["quick_search_result"] = result
+
+    # 显示持久化的查询结果（卡片）
+    if st.session_state.get("quick_search_result"):
+        result = st.session_state["quick_search_result"]
+        price = result.get("price")
+        change = result.get("change_pct", 0.0)
+        updated = result.get("updated_at", "")
+
+        with st.container(border=True):
+            c1, c2, c3 = st.columns([2.5, 2, 1.5])
+            with c1:
+                st.markdown(f"**{result['symbol']}**")
+                st.caption(f"市场：{result.get('market', '—')}")
+
+            with c2:
+                if price is not None:
+                    st.metric(
+                        "当前价格",
+                        f"{price:,.2f}",
+                        delta=f"{change:+.2f}%" if change != 0 else None,
+                        delta_color="normal" if change >= 0 else "inverse",
+                    )
+                else:
+                    st.metric("当前价格", "—")
+
+            with c3:
+                st.caption(f"更新于 {updated}")
+
+                analysis_key = f"show_analysis_{result['symbol']}"
+
+                if st.button("🧠 智能分析", key=f"btn_smart_{result['symbol']}", use_container_width=True):
+                    st.session_state[analysis_key] = True
+
+        # ===== 分析结果放在卡片外部，全宽展示 =====
+        if st.session_state.get(analysis_key):
+            with st.spinner("Grok 正在分析中..."):
+                try:
+                    xai_api_key = st.secrets.get("XAI_API_KEY", "")
+                    if not xai_api_key or xai_api_key == "在这里填你的xAI API Key":
+                        st.error("❌ 未检测到有效的 XAI_API_KEY，请在 .streamlit/secrets.toml 中配置！")
+                    else:
+                        analysis = generate_asset_analysis(result["symbol"], result)
+                        with st.expander("📊 智能分析结果", expanded=True):
+                            # ===== 第一行：综合评分 + 结论（最醒目） =====
+                            st.markdown("### 综合评分与结论")
+                            score_col, conclusion_col = st.columns([1.8, 5])
+                            with score_col:
+                                st.metric("综合评分", f"{analysis.get('score', 0)} / 100")
+                            with conclusion_col:
+                                conclusion = analysis.get("conclusion", "观望")
+                                if conclusion == "值得关注":
+                                    st.success(f"✅ {conclusion}")
+                                elif conclusion == "谨慎":
+                                    st.warning(f"⚠️ {conclusion}")
+                                else:
+                                    st.info(f"👀 {conclusion}")
+
+                            st.markdown("---")
+
+                            # ===== 第二行：技术面 + 多因子（横向并排） =====
+                            tech_col, factor_col = st.columns(2)
+                            with tech_col:
+                                st.markdown("**📈 技术面分析**")
+                                st.write(analysis.get("technical_summary", "暂无"))
+                            with factor_col:
+                                st.markdown("**🔬 多因子与驱动因素**")
+                                st.write(analysis.get("multi_factor_conclusion", "暂无"))
+
+                            st.markdown("---")
+
+                            # ===== 第三行：未来趋势（全宽） =====
+                            st.markdown("**📅 1-4周趋势判断与展望**")
+                            st.write(analysis.get("future_trend", "暂无"))
+                            st.caption(f"建议关注区间：{analysis.get('suggested_range', '暂无')}")
+
+                            st.markdown("---")
+
+                            # ===== 第四行：风险提示（全宽警告） =====
+                            st.markdown("**⚠️ 风险提示**")
+                            st.warning(analysis.get("risk_warning", "暂无"))
+
+                            st.markdown("---")
+
+                            # ===== 操作按钮（横向并排） =====
+                            btn_col1, btn_col2 = st.columns(2)
+                            with btn_col1:
+                                if st.button("➕ 加入持仓", key=f"add_port_{result['symbol']}"):
+                                    st.success("✅ 已加入持仓（占位功能）")
+                            with btn_col2:
+                                if st.button("👁️ 加入观察列表", key=f"add_watch_{result['symbol']}"):
+                                    st.success("✅ 已加入观察列表（占位功能）")
+
+                            # ===== 继续追问功能 =====
+                            st.markdown("---")
+                            st.markdown("### 💬 继续追问 / 与 Grok 对话")
+
+                            chat_key = f"chat_history_{result['symbol']}"
+                            if chat_key not in st.session_state:
+                                st.session_state[chat_key] = []
+
+                            # 清空对话按钮（放在聊天区域上方）
+                            if st.button("🗑️ 清空对话", key=f"clear_chat_{result['symbol']}"):
+                                st.session_state[chat_key] = []
+                                st.rerun()
+
+                            # 固定高度聊天窗口（内部滚动）
+                            with st.container(height=500):
+                                for msg in st.session_state[chat_key]:
+                                    with st.chat_message(msg["role"]):
+                                        st.write(msg["content"])
+
+                            # 用户输入
+                            user_question = st.chat_input("请输入你的问题...", key=f"chat_input_{result['symbol']}")
+
+                            if user_question:
+                                # 添加用户消息到历史
+                                st.session_state[chat_key].append({"role": "user", "content": user_question})
+
+                                # 构造发给 Grok 的消息
+                                if len(st.session_state[chat_key]) == 1:
+                                    # 第一次追问，把分析结果作为 System Prompt（使用升级版）
+                                    system_content = f"""你现在是 Grok 4.3，一位经验丰富、逻辑严谨的短期金融分析师，正在和用户进行深度对话。
+
+背景信息：
+用户已经获得了一份关于 {result['symbol']} 的 1-4 周智能分析报告，报告内容如下：
+
+{analysis}
+
+你的任务是：
+- 基于用户的新问题，结合之前的分析报告，进行深入、专业的回答。
+- 回答必须有清晰的因果逻辑（因为什么 → 导致什么）。
+- 优先解释“为什么”而不是只描述现象。
+- 保持 1-4 周的时间维度。
+- 语气像一位有洞察力的老师，客观、专业、直接、有逻辑。
+- 避免空话、套话和过度中性表述。
+
+回答结构建议（根据问题灵活调整）：
+1. 直接回答用户的问题核心
+2. 结合背景分析进行因果解释
+3. 给出当前判断或建议
+4. 如果合适，指出需要继续观察的关键点
+
+请用清晰、结构化的方式回答用户的问题：{user_question}"""
+                                    messages = [
+                                        {"role": "system", "content": system_content},
+                                        {"role": "user", "content": user_question}
+                                    ]
+                                else:
+                                    # 后续对话，正常维护历史
+                                    messages = [{"role": m["role"], "content": m["content"]} for m in st.session_state[chat_key]]
+
+                                # 调用 Grok
+                                with st.spinner("Grok 正在思考..."):
+                                    try:
+                                        xai_api_key = st.secrets.get("XAI_API_KEY", "")
+                                        client = OpenAI(api_key=xai_api_key, base_url="https://api.x.ai/v1")
+                                        response = client.chat.completions.create(
+                                            model="grok-3",
+                                            messages=messages,
+                                            temperature=0.7,
+                                            max_tokens=1500
+                                        )
+                                        grok_reply = response.choices[0].message.content
+
+                                        # 添加 Grok 回复到历史
+                                        st.session_state[chat_key].append({"role": "assistant", "content": grok_reply})
+                                        st.rerun()
+
+                                    except Exception as e:
+                                        st.error(f"❌ 对话失败：{e}")
+
+
+                            # ===== K 线图（专业版） =====
+                            st.markdown("---")
+                            st.markdown("### 📈 近期 K 线走势")
+
+                            from market_data import fetch_kline_data
+                            import plotly.graph_objects as go
+                            from plotly.subplots import make_subplots
+
+                            show_ma = st.checkbox("显示均线 (MA20 / MA50)", value=True, key=f"show_ma_{result['symbol']}")
+
+                            kline_df = fetch_kline_data(result["symbol"], days=60)
+                            if not kline_df.empty:
+                                # 创建子图：K线 + 成交量
+                                fig = make_subplots(
+                                    rows=2, cols=1,
+                                    shared_xaxes=True,
+                                    vertical_spacing=0.03,
+                                    row_heights=[0.7, 0.3]
+                                )
+
+                                # K线
+                                fig.add_trace(
+                                    go.Candlestick(
+                                        x=kline_df["date"],
+                                        open=kline_df["open"],
+                                        high=kline_df["high"],
+                                        low=kline_df["low"],
+                                        close=kline_df["close"],
+                                        name="K线",
+                                        increasing_line_color="#00C853",
+                                        decreasing_line_color="#FF1744"
+                                    ),
+                                    row=1, col=1
+                                )
+
+                                # 均线
+                                if show_ma:
+                                    kline_df["ma20"] = kline_df["close"].rolling(20).mean()
+                                    kline_df["ma50"] = kline_df["close"].rolling(50).mean()
+                                    fig.add_trace(go.Scatter(x=kline_df["date"], y=kline_df["ma20"], line=dict(color="#FFA726", width=1.5), name="MA20"), row=1, col=1)
+                                    fig.add_trace(go.Scatter(x=kline_df["date"], y=kline_df["ma50"], line=dict(color="#7C4DFF", width=1.5), name="MA50"), row=1, col=1)
+
+                                # 成交量
+                                colors = ["#00C853" if kline_df["close"].iloc[i] >= kline_df["open"].iloc[i] else "#FF1744" for i in range(len(kline_df))]
+                                fig.add_trace(
+                                    go.Bar(x=kline_df["date"], y=kline_df["volume"], name="成交量", marker_color=colors, opacity=0.6),
+                                    row=2, col=1
+                                )
+
+                                fig.update_layout(
+                                    height=550,
+                                    margin=dict(l=10, r=10, t=30, b=10),
+                                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                                    xaxis_rangeslider_visible=True,
+                                    xaxis2_rangeslider_visible=False,
+                                    hovermode="x unified"
+                                )
+
+                                fig.update_yaxes(title_text="价格", row=1, col=1)
+                                fig.update_yaxes(title_text="成交量", row=2, col=1)
+
+                                st.plotly_chart(fig, use_container_width=True)
+                            else:
+                                st.info("暂无 K 线数据")
+
+                except Exception as e:
+                    st.error(f"❌ 分析失败：{e}")
+
+    st.divider()
 
     st.markdown(
         "这是我们筛选的 **50 支长期关注核心资产**（20 美股 + 20 港股 + 10 加密货币）。"

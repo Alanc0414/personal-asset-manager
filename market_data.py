@@ -185,3 +185,118 @@ def fetch_histories_batch(
         session.close()
 
     return results
+
+
+def normalize_symbol(symbol: str) -> str:
+    """自动将常见加密货币简称转为 Yahoo Finance 正确 ticker 格式。"""
+    s = symbol.strip().upper()
+    crypto_map = {
+        "ETH": "ETH-USD",
+        "BTC": "BTC-USD",
+        "SOL": "SOL-USD",
+        "DOGE": "DOGE-USD",
+        "XRP": "XRP-USD",
+        "ADA": "ADA-USD",
+        "AVAX": "AVAX-USD",
+    }
+    return crypto_map.get(s, s)
+
+
+def fetch_latest_price(symbol: str) -> dict:
+    """快速获取单资产最新价格和涨跌幅（用于快速查询入口）。
+
+    优先使用 yf.Ticker.info 获取实时价格，失败时回退到 history。
+    Returns:
+        dict: {
+            "symbol": str,
+            "price": float | None,
+            "change_pct": float | None,
+            "updated_at": str,
+            "error": str | None
+        }
+    """
+    from datetime import datetime
+
+    sym = normalize_symbol(symbol)
+    session = create_yfinance_session()
+    try:
+        ticker = yf.Ticker(sym, session=session)
+        info = ticker.info or {}
+
+        price = info.get("regularMarketPrice") or info.get("currentPrice")
+        change_pct = info.get("regularMarketChangePercent")
+
+        if price is not None:
+            return {
+                "symbol": sym,
+                "price": round(float(price), 4),
+                "change_pct": round(float(change_pct), 2) if change_pct is not None else 0.0,
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "error": None,
+            }
+    except Exception:
+        pass
+    finally:
+        session.close()
+
+    # 回退到 history 方式
+    hist, err = fetch_symbol_history(sym, period="5d")
+    if hist is None or hist.empty:
+        return {
+            "symbol": sym,
+            "price": None,
+            "change_pct": None,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "error": err or "无法获取行情",
+        }
+
+    try:
+        close = hist["Close"].dropna()
+        if len(close) < 2:
+            price = float(close.iloc[-1])
+            return {
+                "symbol": sym,
+                "price": round(price, 4),
+                "change_pct": 0.0,
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "error": None,
+            }
+
+        latest = float(close.iloc[-1])
+        prev = float(close.iloc[-2])
+        change_pct = round((latest - prev) / prev * 100, 2) if prev != 0 else 0.0
+
+        return {
+            "symbol": sym,
+            "price": round(latest, 4),
+            "change_pct": change_pct,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "symbol": sym,
+            "price": None,
+            "change_pct": None,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "error": f"解析失败: {e}",
+        }
+
+
+def fetch_kline_data(symbol: str, days: int = 60) -> pd.DataFrame:
+    """获取指定资产的 K 线数据（OHLCV），用于绘制图表。"""
+    normalized = normalize_symbol(symbol)
+    hist, err = fetch_symbol_history(normalized, period=f"{days}d")
+    if hist is None or hist.empty:
+        return pd.DataFrame()
+
+    df = hist.reset_index()
+    df = df.rename(columns={
+        "Date": "date",
+        "Open": "open",
+        "High": "high",
+        "Low": "low",
+        "Close": "close",
+        "Volume": "volume"
+    })
+    return df[["date", "open", "high", "low", "close", "volume"]]
